@@ -1,0 +1,58 @@
+semantic_models:
+  - name: customer_ltv
+    description: "Customer lifetime value aggregations"
+    model: ref('customer_ltv')
+    defaults:
+      agg_time_dimension: first_purchase_date
+
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_sk
+
+    measures:
+      - name: customer_count
+        description: "Number of customers"
+        agg: count
+        expr: customer_sk
+      - name: avg_lifetime_value
+        description: "Average customer lifetime gross sales"
+        agg: average
+        expr: lifetime_gross_sales
+      - name: total_lifetime_sales
+        description: "Sum of all customer lifetime sales"
+        agg: sum
+        expr: lifetime_gross_sales
+      - name: avg_transactions
+        description: "Average transaction count per customer"
+        agg: average
+        expr: total_transactions
+
+    dimensions:
+      - name: first_purchase_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: first_purchase_date
+      - name: channels_used
+        type: categorical
+        expr: channels_used
+      - name: gender
+        type: categorical
+        expr: cd_gender
+      - name: state
+        type: categorical
+        expr: ca_state
+
+metrics:
+  - name: total_customers
+    description: "Total unique customers"
+    type: simple
+    type_params:
+      measure: customer_count
+
+  - name: average_customer_ltv
+    description: "Average lifetime value per customer"
+    type: simple
+    type_params:
+      measure: avg_lifetime_value

@@ -1,0 +1,7 @@
+retail_sage:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/duckdb/retail_sage.duckdb
+      threads: 8

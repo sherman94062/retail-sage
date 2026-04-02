@@ -1,0 +1,97 @@
+semantic_models:
+  - name: sales
+    description: "Unified sales transactions across store, catalog, and web channels"
+    model: ref('fct_sales')
+    defaults:
+      agg_time_dimension: sale_date
+
+    entities:
+      - name: sale
+        type: primary
+        expr: "sold_date_sk || '-' || item_sk || '-' || order_number || '-' || channel"
+      - name: customer
+        type: foreign
+        expr: customer_sk
+      - name: item
+        type: foreign
+        expr: item_sk
+
+    measures:
+      - name: gross_sales_amount
+        description: "Total extended sales price"
+        agg: sum
+        expr: ext_sales_price
+      - name: net_sales_amount
+        description: "Total net paid amount"
+        agg: sum
+        expr: net_paid
+      - name: net_profit
+        description: "Total net profit"
+        agg: sum
+        expr: net_profit
+      - name: total_quantity
+        description: "Total quantity sold"
+        agg: sum
+        expr: quantity
+      - name: transaction_count
+        description: "Number of sales transactions"
+        agg: count
+      - name: average_order_value
+        description: "Average extended sales price per transaction"
+        agg: average
+        expr: ext_sales_price
+
+    dimensions:
+      - name: sale_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: d_date
+      - name: channel
+        type: categorical
+        expr: channel
+      - name: year
+        type: categorical
+        expr: d_year
+      - name: month
+        type: categorical
+        expr: d_month
+      - name: is_holiday
+        type: categorical
+        expr: is_holiday
+
+metrics:
+  - name: gross_sales
+    description: "Total gross sales across all channels"
+    type: simple
+    type_params:
+      measure: gross_sales_amount
+
+  - name: net_sales
+    description: "Total net sales (after discounts, before returns)"
+    type: simple
+    type_params:
+      measure: net_sales_amount
+
+  - name: total_profit
+    description: "Total net profit across all channels"
+    type: simple
+    type_params:
+      measure: net_profit
+
+  - name: avg_order_value
+    description: "Average order value"
+    type: simple
+    type_params:
+      measure: average_order_value
+
+  - name: revenue_per_customer
+    description: "Gross sales divided by unique customers"
+    type: derived
+    type_params:
+      expr: gross_sales_amount / nullif(customer_count, 0)
+      metrics:
+        - name: gross_sales_amount
+          offset_window: null
+        - name: customer_count
+          offset_window: null

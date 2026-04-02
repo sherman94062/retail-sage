@@ -1,0 +1,317 @@
+version: 2
+
+models:
+  # Fact Tables (Sales)
+  - name: stg_tpcds__store_sales
+    description: |
+      Staging model for TPC-DS store_sales fact table.
+      Contains all in-store transaction records across multiple years, including items purchased,
+      quantities, sales amounts, costs, and associated store/promotion details.
+    columns:
+      - name: ss_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: ss_ticket_number
+        description: Transaction ticket number
+        tests:
+          - not_null
+
+  - name: stg_tpcds__catalog_sales
+    description: |
+      Staging model for TPC-DS catalog_sales fact table.
+      Contains all catalog/mail-order transaction records, including items ordered,
+      quantities, sales amounts, costs, and associated catalog page/promotion details.
+    columns:
+      - name: cs_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: cs_order_number
+        description: Catalog order number
+        tests:
+          - not_null
+
+  - name: stg_tpcds__web_sales
+    description: |
+      Staging model for TPC-DS web_sales fact table.
+      Contains all e-commerce transaction records, including items purchased,
+      quantities, sales amounts, costs, and associated web page/promotion details.
+    columns:
+      - name: ws_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: ws_order_number
+        description: Web order number
+        tests:
+          - not_null
+
+  # Fact Tables (Returns)
+  - name: stg_tpcds__store_returns
+    description: |
+      Staging model for TPC-DS store_returns fact table.
+      Contains all in-store return records, including items returned,
+      quantities, return amounts, and reason codes.
+    columns:
+      - name: sr_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: sr_ticket_number
+        description: Return transaction ticket number
+        tests:
+          - not_null
+
+  - name: stg_tpcds__catalog_returns
+    description: |
+      Staging model for TPC-DS catalog_returns fact table.
+      Contains all catalog/mail-order return records, including items returned,
+      quantities, return amounts, and reason codes.
+    columns:
+      - name: cr_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: cr_order_number
+        description: Catalog order number (original order)
+        tests:
+          - not_null
+
+  - name: stg_tpcds__web_returns
+    description: |
+      Staging model for TPC-DS web_returns fact table.
+      Contains all e-commerce return records, including items returned,
+      quantities, return amounts, and reason codes.
+    columns:
+      - name: wr_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: wr_order_number
+        description: Web order number (original order)
+        tests:
+          - not_null
+
+  - name: stg_tpcds__inventory
+    description: |
+      Staging model for TPC-DS inventory fact table.
+      Contains periodic snapshots of inventory levels by item, warehouse, and date.
+      Used for inventory analytics, supply chain analysis, and stock-out identification.
+    columns:
+      - name: inv_item_sk
+        description: Item surrogate key
+        tests:
+          - not_null
+      - name: inv_warehouse_sk
+        description: Warehouse surrogate key
+        tests:
+          - not_null
+      - name: inv_date_sk
+        description: Date surrogate key
+        tests:
+          - not_null
+
+  # Dimension Tables
+  - name: stg_tpcds__customer
+    description: |
+      Staging model for TPC-DS customer dimension table.
+      Contains core customer attributes including name, email, phone,
+      account opening date, lifetime customer flag, and preferred channel.
+    columns:
+      - name: c_customer_sk
+        description: Customer surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__customer_address
+    description: |
+      Staging model for TPC-DS customer_address dimension table.
+      Contains customer addresses with geocoding information (latitude, longitude),
+      city, state, zip code, and country. One customer may have multiple addresses.
+    columns:
+      - name: ca_address_sk
+        description: Customer address surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__customer_demographics
+    description: |
+      Staging model for TPC-DS customer_demographics dimension table.
+      Contains customer demographic attributes including gender, marital status,
+      education level, purchase frequency, and dependent count.
+    columns:
+      - name: cd_demo_sk
+        description: Customer demographics surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__date_dim
+    description: |
+      Staging model for TPC-DS date_dim dimension table.
+      Contains complete date attributes for all dates in the TPC-DS dataset,
+      including day of week, week number, month, quarter, year, and fiscal calendar attributes.
+    columns:
+      - name: d_date_sk
+        description: Date surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__time_dim
+    description: |
+      Staging model for TPC-DS time_dim dimension table.
+      Contains time attributes for each hour/minute combination in the day,
+      including hour, minute, second, and AM/PM indicator.
+    columns:
+      - name: t_time_sk
+        description: Time surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__item
+    description: |
+      Staging model for TPC-DS item dimension table.
+      Contains product catalog attributes including item name, description,
+      category, brand, class, color, size, standard cost, and current price.
+    columns:
+      - name: i_item_sk
+        description: Item surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__promotion
+    description: |
+      Staging model for TPC-DS promotion dimension table.
+      Contains promotional campaign details including promotion name, type,
+      discount percentage, start/end dates, and sales channels targeted.
+    columns:
+      - name: p_promo_sk
+        description: Promotion surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__store
+    description: |
+      Staging model for TPC-DS store dimension table.
+      Contains store attributes including store name, address, store manager,
+      opening and closing dates, floor space, and store hours.
+    columns:
+      - name: s_store_sk
+        description: Store surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__warehouse
+    description: |
+      Staging model for TPC-DS warehouse dimension table.
+      Contains warehouse facility information including warehouse name, location,
+      square footage, and warehouse manager contact information.
+    columns:
+      - name: w_warehouse_sk
+        description: Warehouse surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__call_center
+    description: |
+      Staging model for TPC-DS call_center dimension table.
+      Contains call center attributes including center name, location, manager,
+      phone lines, and operating hours.
+    columns:
+      - name: cc_call_center_sk
+        description: Call center surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__catalog_page
+    description: |
+      Staging model for TPC-DS catalog_page dimension table.
+      Contains catalog page attributes including page number, catalog ID,
+      page description, and start/end dates for page validity.
+    columns:
+      - name: cp_catalog_page_sk
+        description: Catalog page surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__web_site
+    description: |
+      Staging model for TPC-DS web_site dimension table.
+      Contains website attributes including site name, manager, country,
+      open and close dates, and customer service contact information.
+    columns:
+      - name: web_site_sk
+        description: Web site surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__web_page
+    description: |
+      Staging model for TPC-DS web_page dimension table.
+      Contains web page attributes including page name, URL, open and close dates,
+      and page content type classification.
+    columns:
+      - name: wp_web_page_sk
+        description: Web page surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__household_demographics
+    description: |
+      Staging model for TPC-DS household_demographics dimension table.
+      Contains household-level demographic information including household income,
+      number of dependents, number of vehicles, and number of employed adults.
+    columns:
+      - name: hd_demo_sk
+        description: Household demographics surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__income_band
+    description: |
+      Staging model for TPC-DS income_band dimension table.
+      Contains income band ranges and classifications for customer income segmentation.
+    columns:
+      - name: ib_income_band_sk
+        description: Income band surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__ship_mode
+    description: |
+      Staging model for TPC-DS ship_mode dimension table.
+      Contains shipping method attributes including ship mode code, type, and class,
+      used to classify transaction delivery methods.
+    columns:
+      - name: sm_ship_mode_sk
+        description: Ship mode surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_tpcds__reason
+    description: |
+      Staging model for TPC-DS reason dimension table.
+      Contains return/transaction reason codes and descriptions,
+      used to classify the reasons for product returns and cancellations.
+    columns:
+      - name: r_reason_sk
+        description: Reason surrogate key (unique identifier)
+        tests:
+          - not_null
+          - unique

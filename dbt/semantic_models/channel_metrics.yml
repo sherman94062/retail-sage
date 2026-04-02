@@ -1,0 +1,52 @@
+semantic_models:
+  - name: channel_summary
+    description: "Daily aggregated channel performance"
+    model: ref('daily_channel_summary')
+    defaults:
+      agg_time_dimension: summary_date
+
+    entities:
+      - name: channel_day
+        type: primary
+        expr: "d_date || '-' || channel"
+
+    measures:
+      - name: channel_gross_sales
+        description: "Gross sales by channel"
+        agg: sum
+        expr: gross_sales
+      - name: channel_net_sales
+        description: "Net sales by channel"
+        agg: sum
+        expr: net_sales
+      - name: channel_transactions
+        description: "Transaction count by channel"
+        agg: sum
+        expr: transaction_count
+      - name: channel_unique_customers
+        description: "Unique customers by channel"
+        agg: sum
+        expr: unique_customers
+
+    dimensions:
+      - name: summary_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: d_date
+      - name: channel
+        type: categorical
+        expr: channel
+      - name: year
+        type: categorical
+        expr: d_year
+      - name: month
+        type: categorical
+        expr: d_month
+
+metrics:
+  - name: channel_mix_gross_sales
+    description: "Gross sales useful for computing channel mix percentages"
+    type: simple
+    type_params:
+      measure: channel_gross_sales

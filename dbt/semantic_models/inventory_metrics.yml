@@ -1,0 +1,47 @@
+semantic_models:
+  - name: inventory
+    description: "Daily inventory snapshots by item and warehouse"
+    model: ref('stg_tpcds__inventory')
+    defaults:
+      agg_time_dimension: inventory_date
+
+    entities:
+      - name: inventory_snapshot
+        type: primary
+        expr: "inv_item_sk || '-' || inv_warehouse_sk || '-' || inv_date_sk"
+      - name: item
+        type: foreign
+        expr: inv_item_sk
+      - name: warehouse
+        type: foreign
+        expr: inv_warehouse_sk
+
+    measures:
+      - name: total_quantity_on_hand
+        description: "Total inventory quantity on hand"
+        agg: sum
+        expr: inv_quantity_on_hand
+      - name: avg_quantity_on_hand
+        description: "Average quantity on hand per item/warehouse"
+        agg: average
+        expr: inv_quantity_on_hand
+
+    dimensions:
+      - name: inventory_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: inv_date_sk
+
+metrics:
+  - name: total_inventory
+    description: "Total inventory on hand"
+    type: simple
+    type_params:
+      measure: total_quantity_on_hand
+
+  - name: avg_inventory_per_location
+    description: "Average inventory per item-warehouse combination"
+    type: simple
+    type_params:
+      measure: avg_quantity_on_hand
