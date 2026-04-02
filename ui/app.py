@@ -109,6 +109,21 @@ def _render_result_details(agent_result):
     with detail_cols[3]:
         st.caption(f"Turns: {agent_result.total_turns}")
 
+    if agent_result.tables_queried:
+        # Categorize tables by layer
+        marts = [t for t in agent_result.tables_queried if t.startswith(("fct_", "dim_", "daily_", "customer_ltv"))]
+        intermediates = [t for t in agent_result.tables_queried if t.startswith("int_")]
+        raw = [t for t in agent_result.tables_queried if t not in marts and t not in intermediates]
+        lineage_parts = []
+        if raw:
+            lineage_parts.append(f"Raw: `{'`, `'.join(raw)}`")
+        if intermediates:
+            lineage_parts.append(f"Intermediate: `{'`, `'.join(intermediates)}`")
+        if marts:
+            lineage_parts.append(f"Marts: `{'`, `'.join(marts)}`")
+        with st.expander(f"dbt Models Used ({len(agent_result.tables_queried)})", expanded=False):
+            st.markdown(" → ".join(lineage_parts) if lineage_parts else "None")
+
     if agent_result.sql_queries:
         with st.expander(f"SQL Queries ({len(agent_result.sql_queries)})", expanded=False):
             for j, sql in enumerate(agent_result.sql_queries, 1):

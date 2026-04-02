@@ -8,6 +8,7 @@ Usage:
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,12 +40,35 @@ MODELS = {
 }
 DEFAULT_MODEL = "haiku"
 
+# Known tables/models for extraction from SQL
+_KNOWN_TABLES = {
+    "fct_sales", "fct_returns", "dim_customer", "dim_item", "dim_store", "dim_date",
+    "daily_channel_summary", "customer_ltv",
+    "int_sales_unified", "int_returns_unified", "int_customer_profile", "int_item_performance",
+    "store_sales", "catalog_sales", "web_sales", "store_returns", "catalog_returns", "web_returns",
+    "inventory", "customer", "customer_address", "customer_demographics", "date_dim", "time_dim",
+    "item", "promotion", "store", "warehouse", "call_center", "catalog_page",
+    "web_site", "web_page", "household_demographics", "income_band", "ship_mode", "reason",
+}
+
+
+def _extract_tables_from_sql(sql: str) -> list[str]:
+    """Extract known table names referenced in a SQL query."""
+    sql_lower = sql.lower()
+    found = []
+    for table in _KNOWN_TABLES:
+        # Match table name as a whole word (after FROM, JOIN, or comma)
+        if re.search(rf'\b{re.escape(table)}\b', sql_lower):
+            found.append(table)
+    return found
+
 
 @dataclass
 class AgentResult:
     """Structured result from an agent query."""
     answer: str = ""
     sql_queries: list[str] = field(default_factory=list)
+    tables_queried: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
@@ -160,13 +184,16 @@ class RetailSageAgent:
                         tool_name = block.name
                         tool_input = block.input
 
-                        # Capture SQL queries
+                        # Capture SQL queries and tables
                         if tool_name == "execute_sql":
                             sql = tool_input.get("query", "")
                             result.sql_queries.append(sql)
+                            # Extract table names from SQL
+                            result.tables_queried.extend(_extract_tables_from_sql(sql))
                             _progress(f"Executing SQL: {sql[:120]}{'...' if len(sql) > 120 else ''}")
                         elif tool_name == "get_schema":
                             tables = tool_input.get("tables", [])
+                            result.tables_queried.extend(tables)
                             _progress(f"Inspecting schema: {', '.join(tables)}")
                         elif tool_name == "search_tables":
                             _progress(f"Searching tables: {tool_input.get('query', '')[:80]}")
@@ -196,6 +223,9 @@ class RetailSageAgent:
                         answer += block.text
 
                 result.answer = answer
+                # Deduplicate tables, preserving order
+                seen = set()
+                result.tables_queried = [t for t in result.tables_queried if not (t in seen or seen.add(t))]
                 _progress(f"Done ({self.model_key}). {result.total_turns} turns, {result.total_tokens:,} tokens, ${result.cost:.4f}")
 
                 # Store this Q&A in memory

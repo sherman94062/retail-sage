@@ -22,6 +22,24 @@ Always show your reasoning. When diagnosing a metric drop, systematically elimin
 hypotheses: date range issues, data pipeline gaps, seasonal effects, category-specific \
 changes, geographic effects, promotional calendar shifts.
 
+## Response Format
+
+Structure every answer with these sections:
+
+**Results** — The actual findings with specific numbers, formatted clearly.
+
+**Why I Chose This Approach** — Explain your analytical reasoning:
+- Which dbt models/marts you queried and why (e.g. "Used `fct_sales` because it unifies \
+all three channels with date fields already joined, avoiding a manual date_dim join")
+- Which metrics or measures the calculation is based on (e.g. "Computed return_rate as \
+qty_returned / qty_sold from `fct_returns` and `fct_sales`")
+- Why you chose this specific approach over alternatives (e.g. "Used `daily_channel_summary` \
+instead of raw `fct_sales` because the pre-aggregated daily grain is sufficient and faster")
+- The dbt lineage path: which staging → intermediate → mart models feed the result
+
+Keep this section concise (3-6 bullet points). The goal is transparency — a data engineer \
+reading this should understand exactly which semantic layer objects produced the numbers.
+
 ## SQL Guidelines
 - The database is DuckDB. Use DuckDB SQL syntax.
 - Use CTEs for readability, not subqueries.
@@ -53,6 +71,12 @@ WHERE d_year = (SELECT MAX(d_year) - 1 FROM fct_sales WHERE d_date IS NOT NULL)
 GROUP BY channel
 ORDER BY gross_revenue DESC
 """,
+        "why": """**Why I Chose This Approach**
+- Queried **fct_sales** (mart) because it unifies store_sales, catalog_sales, and web_sales into a single table with a `channel` column, avoiding three separate queries
+- Used `ext_sales_price` for gross revenue (the MetricFlow `gross_sales_amount` measure) and `net_paid` for net revenue (`net_sales_amount` measure)
+- Lineage: `stg_tpcds__store_sales` + `stg_tpcds__catalog_sales` + `stg_tpcds__web_sales` → `int_sales_unified` → `fct_sales`
+- Filtered by `d_year` which comes from the pre-joined `date_dim`, so no extra join needed
+- Chose fct_sales over `daily_channel_summary` because I needed customer-level granularity for COUNT(DISTINCT customer_sk)""",
     },
     {
         "question": "Which product categories have the highest return rates?",
@@ -83,6 +107,12 @@ FROM sales_by_cat s
 LEFT JOIN returns_by_cat r ON s.i_category = r.i_category
 ORDER BY return_rate_pct DESC
 """,
+        "why": """**Why I Chose This Approach**
+- Used both **fct_sales** and **fct_returns** marts to compute return_rate = qty_returned / qty_sold, matching the `return_rate` measure defined in the MetricFlow `int_item_performance` semantic model
+- Joined to **dim_item** (`i_category`) for the category grouping dimension
+- Lineage: `stg_tpcds__store_returns` + `catalog_returns` + `web_returns` → `int_returns_unified` → `fct_returns`; same pattern for sales
+- Could have used `int_item_performance` directly (it pre-computes return_rate by item+channel), but needed category-level rollup which requires re-aggregation anyway
+- Used LEFT JOIN from sales to returns so categories with zero returns still appear""",
     },
     {
         "question": "How has our customer count trended month over month?",
@@ -110,6 +140,12 @@ SELECT
 FROM monthly
 ORDER BY d_year, d_month
 """,
+        "why": """**Why I Chose This Approach**
+- Queried **fct_sales** for cross-channel customer counts — this is the unified mart that covers all three sales channels
+- Used `d_year` and `d_month` columns (from the pre-joined date_dim) as the time grain, aligned with the MetricFlow `sale_date` time dimension
+- The `unique_customers` metric maps to the `active_customers_30d` concept but at monthly grain
+- Considered `daily_channel_summary` but it stores `unique_customers` per channel per day — re-aggregating daily uniques doesn't give correct monthly uniques (a customer active on multiple days would be double-counted)
+- Lineage: all three `stg_tpcds__*_sales` → `int_sales_unified` → `fct_sales`""",
     },
 ]
 
@@ -120,7 +156,8 @@ def format_few_shot_examples() -> str:
     for i, ex in enumerate(FEW_SHOT_EXAMPLES, 1):
         parts.append(f"### Example {i}: \"{ex['question']}\"")
         parts.append(f"**Reasoning**: {ex['reasoning']}")
-        parts.append(f"```sql\n{ex['sql'].strip()}\n```\n")
+        parts.append(f"```sql\n{ex['sql'].strip()}\n```")
+        parts.append(f"\n{ex['why']}\n")
     return "\n".join(parts)
 
 
