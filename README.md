@@ -25,22 +25,7 @@ The agent has access to 5 tools and uses multi-turn reasoning with Claude's tool
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   Streamlit Chat UI                    │
-│        (token/cost metrics, SQL viewer, progress)      │
-├────────────────────────────────────────────────────────┤
-│                  Agent Orchestrator                    │
-│          (multi-turn Claude tool use loop)             │
-├────────────────────────────────────────────────────────┤
-│ execute_sql get_schema search_tables get_history list  │
-├────────────────────────────────────────────────────────┤
-│ DuckDB (TPC-DS data)    │ ChromaDB (semantic memory)   │
-├─────────────────────────┴──────────────────────────────┤
-│          dbt (staging → intermediate → marts)          │
-│          MetricFlow (semantic metric definitions)      │
-└────────────────────────────────────────────────────────┘
-```
+<img src="docs/architecture.svg" alt="Retail-SAGE Architecture" width="800"/>
 
 ## Tech Stack
 
