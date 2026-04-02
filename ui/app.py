@@ -98,7 +98,9 @@ with st.sidebar:
             st.session_state.example_question = ex
 
 def _render_result_details(agent_result):
-    """Render SQL, diagnostics, and token info below an assistant message."""
+    """Render SQL, diagnostics, LLM calls, and token info below an assistant message."""
+    import json as _json
+
     detail_cols = st.columns(4)
     with detail_cols[0]:
         st.caption(f"Model: {agent_result.model}")
@@ -110,7 +112,6 @@ def _render_result_details(agent_result):
         st.caption(f"Turns: {agent_result.total_turns}")
 
     if agent_result.tables_queried:
-        # Categorize tables by layer
         marts = [t for t in agent_result.tables_queried if t.startswith(("fct_", "dim_", "daily_", "customer_ltv"))]
         intermediates = [t for t in agent_result.tables_queried if t.startswith("int_")]
         raw = [t for t in agent_result.tables_queried if t not in marts and t not in intermediates]
@@ -128,6 +129,80 @@ def _render_result_details(agent_result):
         with st.expander(f"SQL Queries ({len(agent_result.sql_queries)})", expanded=False):
             for j, sql in enumerate(agent_result.sql_queries, 1):
                 st.code(sql, language="sql")
+
+    # LLM API Call Details
+    if agent_result.api_calls:
+        with st.expander(f"LLM API Calls ({len(agent_result.api_calls)} turns)", expanded=False):
+            for call in agent_result.api_calls:
+                st.markdown(f"---\n#### Turn {call.turn}")
+
+                # Request payload
+                req_col, resp_col = st.columns(2)
+                with req_col:
+                    st.markdown("**Request**")
+                    st.code(_json.dumps({
+                        "model": call.model,
+                        "max_tokens": call.max_tokens,
+                        "system": f"<{call.system_prompt_length:,} chars>",
+                        "tools": f"<{call.tools_provided} tool definitions>",
+                        "messages": f"<{call.messages_sent} messages>",
+                    }, indent=2), language="json")
+
+                with resp_col:
+                    st.markdown("**Response**")
+                    resp_data = {
+                        "stop_reason": call.stop_reason,
+                        "usage": {
+                            "input_tokens": call.input_tokens,
+                            "output_tokens": call.output_tokens,
+                            "total_tokens": call.total_tokens,
+                            "cost": f"${call.cost:.6f}",
+                        },
+                    }
+                    st.code(_json.dumps(resp_data, indent=2), language="json")
+
+                # Assistant reasoning text (if any)
+                if call.assistant_text and call.stop_reason == "tool_use":
+                    st.markdown("**Assistant reasoning** (before tool calls):")
+                    st.markdown(f"> {call.assistant_text[:500]}{'...' if len(call.assistant_text) > 500 else ''}")
+
+                # Tool calls with full payloads
+                if call.tool_calls:
+                    for tc in call.tool_calls:
+                        st.markdown(f"**Tool call:** `{tc.name}`")
+                        in_col, out_col = st.columns(2)
+                        with in_col:
+                            st.markdown("*Input payload:*")
+                            st.code(_json.dumps(tc.input, indent=2, default=str), language="json")
+                        with out_col:
+                            st.markdown("*Result (truncated):*")
+                            try:
+                                parsed = _json.loads(tc.result)
+                                preview = _json.dumps(parsed, indent=2, default=str)
+                                if len(preview) > 1500:
+                                    preview = preview[:1500] + "\n... (truncated)"
+                                st.code(preview, language="json")
+                            except (_json.JSONDecodeError, TypeError):
+                                st.code(tc.result[:1500], language="text")
+
+                # Final response text (last turn only)
+                if call.stop_reason == "end_turn" and call.assistant_text:
+                    st.markdown("**Final response:** *(see answer above)*")
+
+            # Summary table
+            st.markdown("---\n**Turn-by-turn token summary:**")
+            summary_data = []
+            for call in agent_result.api_calls:
+                tool_names = ", ".join(tc.name for tc in call.tool_calls) if call.tool_calls else "—"
+                summary_data.append({
+                    "Turn": call.turn,
+                    "Stop Reason": call.stop_reason,
+                    "Tools Called": tool_names,
+                    "Input Tokens": f"{call.input_tokens:,}",
+                    "Output Tokens": f"{call.output_tokens:,}",
+                    "Cost": f"${call.cost:.6f}",
+                })
+            st.table(summary_data)
 
     if agent_result.diagnostics:
         with st.expander("Diagnostics", expanded=False):

@@ -64,12 +64,84 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
 
 
 @dataclass
+class ToolCall:
+    """A single tool invocation within an API call."""
+    tool_use_id: str
+    name: str
+    input: dict
+    result: str  # raw JSON string returned by tool
+
+    @property
+    def input_preview(self) -> str:
+        if self.name == "execute_sql":
+            return self.input.get("query", "")[:200]
+        return json.dumps(self.input)[:200]
+
+    @property
+    def result_preview(self) -> str:
+        return self.result[:300]
+
+
+@dataclass
+class ApiCall:
+    """Full record of one Anthropic API request/response round-trip."""
+    turn: int
+    # Request
+    model: str = ""
+    system_prompt_length: int = 0
+    messages_sent: int = 0
+    tools_provided: int = 0
+    max_tokens: int = 0
+    # Response
+    stop_reason: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float = 0.0
+    # Content
+    assistant_text: str = ""          # text blocks from the response
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def request_summary(self) -> dict:
+        """Serializable summary of the request payload."""
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system_prompt_chars": self.system_prompt_length,
+            "messages_count": self.messages_sent,
+            "tools_count": self.tools_provided,
+        }
+
+    def response_summary(self) -> dict:
+        """Serializable summary of the response."""
+        summary = {
+            "stop_reason": self.stop_reason,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "cost": f"${self.cost:.6f}",
+        }
+        if self.assistant_text:
+            summary["text_preview"] = self.assistant_text[:300]
+        if self.tool_calls:
+            summary["tool_calls"] = [
+                {"name": tc.name, "input_preview": tc.input_preview}
+                for tc in self.tool_calls
+            ]
+        return summary
+
+
+@dataclass
 class AgentResult:
     """Structured result from an agent query."""
     answer: str = ""
     sql_queries: list[str] = field(default_factory=list)
     tables_queried: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
+    api_calls: list[ApiCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     total_turns: int = 0
@@ -158,7 +230,7 @@ class RetailSageAgent:
 
         for turn in range(MAX_TURNS):
             result.total_turns = turn + 1
-            _progress(f"Agent turn {turn + 1}: calling Claude...")
+            _progress(f"Agent turn {turn + 1}: calling Claude ({self.model_key})...")
 
             response = self.client.messages.create(
                 model=self.model_id,
@@ -169,10 +241,33 @@ class RetailSageAgent:
             )
 
             # Track tokens
-            result.input_tokens += response.usage.input_tokens
-            result.output_tokens += response.usage.output_tokens
-            self.session_input_tokens += response.usage.input_tokens
-            self.session_output_tokens += response.usage.output_tokens
+            turn_input = response.usage.input_tokens
+            turn_output = response.usage.output_tokens
+            turn_cost = (turn_input * self.model_config["input_cost"] / 1_000_000
+                         + turn_output * self.model_config["output_cost"] / 1_000_000)
+            result.input_tokens += turn_input
+            result.output_tokens += turn_output
+            self.session_input_tokens += turn_input
+            self.session_output_tokens += turn_output
+
+            # Build API call record
+            api_call = ApiCall(
+                turn=turn + 1,
+                model=self.model_id,
+                system_prompt_length=len(system_prompt),
+                messages_sent=len(messages),
+                tools_provided=len(TOOL_DEFINITIONS),
+                max_tokens=4096,
+                stop_reason=response.stop_reason,
+                input_tokens=turn_input,
+                output_tokens=turn_output,
+                cost=turn_cost,
+            )
+
+            # Extract text from response
+            for block in response.content:
+                if hasattr(block, "text"):
+                    api_call.assistant_text += block.text
 
             # Check if the model wants to use tools
             if response.stop_reason == "tool_use":
@@ -188,7 +283,6 @@ class RetailSageAgent:
                         if tool_name == "execute_sql":
                             sql = tool_input.get("query", "")
                             result.sql_queries.append(sql)
-                            # Extract table names from SQL
                             result.tables_queried.extend(_extract_tables_from_sql(sql))
                             _progress(f"Executing SQL: {sql[:120]}{'...' if len(sql) > 120 else ''}")
                         elif tool_name == "get_schema":
@@ -198,31 +292,37 @@ class RetailSageAgent:
                         elif tool_name == "search_tables":
                             _progress(f"Searching tables: {tool_input.get('query', '')[:80]}")
                         elif tool_name == "get_query_history":
-                            _progress(f"Checking query history...")
+                            _progress("Checking query history...")
                         elif tool_name == "list_tables":
-                            _progress(f"Listing available tables...")
+                            _progress("Listing available tables...")
                         else:
                             _progress(f"Tool: {tool_name}")
 
-                        tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
+                        tool_result_str = self.tool_executor.execute_tool(tool_name, tool_input)
+
+                        # Record in API call log
+                        api_call.tool_calls.append(ToolCall(
+                            tool_use_id=block.id,
+                            name=tool_name,
+                            input=tool_input,
+                            result=tool_result_str,
+                        ))
 
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": tool_result,
+                            "content": tool_result_str,
                         })
 
+                result.api_calls.append(api_call)
                 messages.append({"role": "assistant", "content": assistant_content})
                 messages.append({"role": "user", "content": tool_results})
 
             else:
                 # Model is done — extract the text response
-                answer = ""
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        answer += block.text
+                result.api_calls.append(api_call)
+                result.answer = api_call.assistant_text
 
-                result.answer = answer
                 # Deduplicate tables, preserving order
                 seen = set()
                 result.tables_queried = [t for t in result.tables_queried if not (t in seen or seen.add(t))]
@@ -233,7 +333,7 @@ class RetailSageAgent:
                     self.memory.add_query(
                         question=question,
                         sql=result.sql_queries[-1],
-                        result_summary=answer[:500],
+                        result_summary=result.answer[:500],
                     )
 
                 return result
