@@ -85,20 +85,6 @@ with st.sidebar:
         if st.button(ex, key=ex, use_container_width=True):
             st.session_state.example_question = ex
 
-# --- Chat history ---
-for i, message in enumerate(st.session_state.messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-        # Show SQL and diagnostics for assistant messages
-        if message["role"] == "assistant":
-            # Find the corresponding result (assistant messages are at even indices in query_results)
-            result_idx = i // 2  # user=0, assistant=1, user=2, assistant=3...
-            if result_idx < len(st.session_state.query_results):
-                agent_result = st.session_state.query_results[result_idx]
-                _render_result_details(agent_result)
-
-
 def _render_result_details(agent_result):
     """Render SQL, diagnostics, and token info below an assistant message."""
     detail_cols = st.columns(3)
@@ -119,6 +105,18 @@ def _render_result_details(agent_result):
             for diag in agent_result.diagnostics:
                 st.text(diag)
 
+
+# --- Chat history ---
+for i, message in enumerate(st.session_state.messages):
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+        # Show SQL and diagnostics for assistant messages
+        if message["role"] == "assistant":
+            result_idx = i // 2
+            if result_idx < len(st.session_state.query_results):
+                agent_result = st.session_state.query_results[result_idx]
+                _render_result_details(agent_result)
 
 # --- Handle input ---
 if "example_question" in st.session_state:
