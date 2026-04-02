@@ -184,9 +184,9 @@ def run_benchmark(agent, query_ids: list[int] | None = None,
 
             # Ask the agent
             start = time.time()
-            answer = agent.ask(question)
+            agent_result = agent.ask(question)
             result.elapsed_seconds = time.time() - start
-            result.agent_answer = answer
+            result.agent_answer = agent_result.answer
 
             # Try to extract and run the agent's SQL for comparison
             # (This is a simplified comparison — the real value is in the natural language answer)

@@ -21,8 +21,11 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Retail-SAGE")
-st.caption("Semantic Analytics & Governed Execution — AI-Powered Retail Analytics Agent")
+# --- Session state init ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "query_results" not in st.session_state:
+    st.session_state.query_results = []  # parallel list: AgentResult per assistant message
 
 
 @st.cache_resource
@@ -32,12 +35,25 @@ def get_agent():
 
 agent = get_agent()
 
-# Sidebar with info
+# --- Top bar: session token/cost metrics ---
+top_cols = st.columns([3, 1, 1, 1])
+with top_cols[0]:
+    st.title("Retail-SAGE")
+with top_cols[1]:
+    st.metric("Session Tokens", f"{agent.session_total_tokens:,}")
+with top_cols[2]:
+    st.metric("Session Cost", f"${agent.session_cost:.4f}")
+with top_cols[3]:
+    st.metric("Queries", len([m for m in st.session_state.messages if m["role"] == "user"]))
+
+st.caption("Semantic Analytics & Governed Execution — AI-Powered Retail Analytics Agent")
+
+# --- Sidebar ---
 with st.sidebar:
     st.header("About")
     st.markdown("""
     **Retail-SAGE** is an AI analytics agent powered by Claude
-    that autonomously analyzes a 100GB TPC-DS retail data lake.
+    that autonomously analyzes a TPC-DS retail data lake.
 
     **Capabilities:**
     - Natural language to SQL generation
@@ -69,16 +85,42 @@ with st.sidebar:
         if st.button(ex, key=ex, use_container_width=True):
             st.session_state.example_question = ex
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat history
-for message in st.session_state.messages:
+# --- Chat history ---
+for i, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Handle example question click
+        # Show SQL and diagnostics for assistant messages
+        if message["role"] == "assistant":
+            # Find the corresponding result (assistant messages are at even indices in query_results)
+            result_idx = i // 2  # user=0, assistant=1, user=2, assistant=3...
+            if result_idx < len(st.session_state.query_results):
+                agent_result = st.session_state.query_results[result_idx]
+                _render_result_details(agent_result)
+
+
+def _render_result_details(agent_result):
+    """Render SQL, diagnostics, and token info below an assistant message."""
+    detail_cols = st.columns(3)
+    with detail_cols[0]:
+        st.caption(f"Tokens: {agent_result.total_tokens:,} (in: {agent_result.input_tokens:,} / out: {agent_result.output_tokens:,})")
+    with detail_cols[1]:
+        st.caption(f"Cost: ${agent_result.cost:.4f}")
+    with detail_cols[2]:
+        st.caption(f"Turns: {agent_result.total_turns}")
+
+    if agent_result.sql_queries:
+        with st.expander(f"SQL Queries ({len(agent_result.sql_queries)})", expanded=False):
+            for j, sql in enumerate(agent_result.sql_queries, 1):
+                st.code(sql, language="sql")
+
+    if agent_result.diagnostics:
+        with st.expander("Diagnostics", expanded=False):
+            for diag in agent_result.diagnostics:
+                st.text(diag)
+
+
+# --- Handle input ---
 if "example_question" in st.session_state:
     prompt = st.session_state.pop("example_question")
 else:
@@ -90,14 +132,32 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Get agent response
+    # Get agent response with live progress
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing..."):
-            try:
-                response = agent.ask(prompt)
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-            except Exception as e:
-                error_msg = f"Error: {e}"
-                st.error(error_msg)
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        progress_container = st.empty()
+        progress_lines = []
+
+        def on_progress(msg: str):
+            progress_lines.append(msg)
+            progress_container.info("\n".join(progress_lines))
+
+        try:
+            agent_result = agent.ask(prompt, on_progress=on_progress)
+            progress_container.empty()
+
+            st.markdown(agent_result.answer)
+            st.session_state.messages.append({"role": "assistant", "content": agent_result.answer})
+            st.session_state.query_results.append(agent_result)
+
+            _render_result_details(agent_result)
+
+        except Exception as e:
+            progress_container.empty()
+            error_msg = f"Error: {e}"
+            st.error(error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            from agent.agent import AgentResult
+            st.session_state.query_results.append(AgentResult(answer=error_msg))
+
+    # Rerun to update top metrics
+    st.rerun()

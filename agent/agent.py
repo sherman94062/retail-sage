@@ -9,7 +9,9 @@ Usage:
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import anthropic
 from dotenv import load_dotenv
@@ -24,9 +26,37 @@ from agent.tools import TOOL_DEFINITIONS, ToolExecutor
 MODEL = "claude-sonnet-4-20250514"
 MAX_TURNS = 15  # Safety limit on tool-use turns
 
+# Pricing per million tokens (Claude Sonnet 4)
+COST_PER_M_INPUT = 3.00
+COST_PER_M_OUTPUT = 15.00
+
+
+@dataclass
+class AgentResult:
+    """Structured result from an agent query."""
+    answer: str = ""
+    sql_queries: list[str] = field(default_factory=list)
+    diagnostics: list[str] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_turns: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def cost(self) -> float:
+        return (self.input_tokens * COST_PER_M_INPUT / 1_000_000
+                + self.output_tokens * COST_PER_M_OUTPUT / 1_000_000)
+
 
 class RetailSageAgent:
     """AI-powered retail analytics agent using Claude with tool use."""
+
+    # Running session totals
+    session_input_tokens: int = 0
+    session_output_tokens: int = 0
 
     def __init__(self, db_path: str | None = None, chroma_path: str | None = None):
         self.client = anthropic.Anthropic()
@@ -41,21 +71,48 @@ class RetailSageAgent:
         self.memory = MemoryStore(chroma)
         self.context_builder = ContextBuilder(self.db_path)
         self.tool_executor = ToolExecutor(self.db_path, self.memory)
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
 
-    def ask(self, question: str, verbose: bool = False) -> str:
+    @property
+    def session_total_tokens(self) -> int:
+        return self.session_input_tokens + self.session_output_tokens
+
+    @property
+    def session_cost(self) -> float:
+        return (self.session_input_tokens * COST_PER_M_INPUT / 1_000_000
+                + self.session_output_tokens * COST_PER_M_OUTPUT / 1_000_000)
+
+    def ask(self, question: str, verbose: bool = False,
+            on_progress: Callable[[str], None] | None = None) -> AgentResult:
         """
         Send a question to the agent and get a fully-reasoned answer.
         The agent may call tools multiple times before responding.
+
+        Args:
+            question: The user's question.
+            verbose: Print debug output to stdout.
+            on_progress: Optional callback for live progress updates (used by UI).
         """
+        result = AgentResult()
+
+        def _progress(msg: str):
+            result.diagnostics.append(msg)
+            if on_progress:
+                on_progress(msg)
+            if verbose:
+                print(f"  {msg}")
+
         # Build context from memory
+        _progress("Searching memory for relevant context...")
         context = self.context_builder.build_context(question, self.memory)
         system_prompt = build_system_prompt(context)
 
         messages = [{"role": "user", "content": question}]
 
         for turn in range(MAX_TURNS):
-            if verbose:
-                print(f"\n--- Agent turn {turn + 1} ---")
+            result.total_turns = turn + 1
+            _progress(f"Agent turn {turn + 1}: calling Claude...")
 
             response = self.client.messages.create(
                 model=MODEL,
@@ -65,9 +122,14 @@ class RetailSageAgent:
                 messages=messages,
             )
 
+            # Track tokens
+            result.input_tokens += response.usage.input_tokens
+            result.output_tokens += response.usage.output_tokens
+            self.session_input_tokens += response.usage.input_tokens
+            self.session_output_tokens += response.usage.output_tokens
+
             # Check if the model wants to use tools
             if response.stop_reason == "tool_use":
-                # Process all tool calls in this response
                 tool_results = []
                 assistant_content = response.content
 
@@ -76,21 +138,31 @@ class RetailSageAgent:
                         tool_name = block.name
                         tool_input = block.input
 
-                        if verbose:
-                            print(f"  Tool: {tool_name}({json.dumps(tool_input)[:200]})")
+                        # Capture SQL queries
+                        if tool_name == "execute_sql":
+                            sql = tool_input.get("query", "")
+                            result.sql_queries.append(sql)
+                            _progress(f"Executing SQL: {sql[:120]}{'...' if len(sql) > 120 else ''}")
+                        elif tool_name == "get_schema":
+                            tables = tool_input.get("tables", [])
+                            _progress(f"Inspecting schema: {', '.join(tables)}")
+                        elif tool_name == "search_tables":
+                            _progress(f"Searching tables: {tool_input.get('query', '')[:80]}")
+                        elif tool_name == "get_query_history":
+                            _progress(f"Checking query history...")
+                        elif tool_name == "list_tables":
+                            _progress(f"Listing available tables...")
+                        else:
+                            _progress(f"Tool: {tool_name}")
 
-                        result = self.tool_executor.execute_tool(tool_name, tool_input)
-
-                        if verbose:
-                            print(f"  Result: {result[:200]}...")
+                        tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
 
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": result,
+                            "content": tool_result,
                         })
 
-                # Add the assistant's response and tool results to messages
                 messages.append({"role": "assistant", "content": assistant_content})
                 messages.append({"role": "user", "content": tool_results})
 
@@ -101,39 +173,21 @@ class RetailSageAgent:
                     if hasattr(block, "text"):
                         answer += block.text
 
-                # Store this Q&A in memory for future reference
-                # Extract any SQL from the conversation for the memory
-                sql_used = self._extract_sql_from_messages(messages)
-                if sql_used:
+                result.answer = answer
+                _progress(f"Done. {result.total_turns} turns, {result.total_tokens:,} tokens, ${result.cost:.4f}")
+
+                # Store this Q&A in memory
+                if result.sql_queries:
                     self.memory.add_query(
                         question=question,
-                        sql=sql_used,
+                        sql=result.sql_queries[-1],
                         result_summary=answer[:500],
                     )
 
-                return answer
+                return result
 
-        return "I reached the maximum number of reasoning steps. Please try a more specific question."
-
-    def _extract_sql_from_messages(self, messages: list) -> str:
-        """Extract the last SQL query used from the conversation."""
-        for msg in reversed(messages):
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        try:
-                            data = json.loads(item["content"])
-                            if isinstance(data, dict) and "columns" in data:
-                                # This was a SQL result — find the corresponding tool call
-                                break
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-            # Check assistant messages for execute_sql tool calls
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if hasattr(item, "type") and item.type == "tool_use" and item.name == "execute_sql":
-                        return item.input.get("query", "")
-        return ""
+        result.answer = "I reached the maximum number of reasoning steps. Please try a more specific question."
+        return result
 
 
 def interactive_repl():
@@ -172,8 +226,15 @@ def interactive_repl():
 
         print("\nAnalyzing...\n")
         try:
-            answer = agent.ask(question, verbose=verbose)
-            print(f"Agent: {answer}\n")
+            result = agent.ask(question, verbose=verbose)
+            print(f"Agent: {result.answer}")
+            if result.sql_queries:
+                print(f"\nSQL executed ({len(result.sql_queries)} queries):")
+                for i, sql in enumerate(result.sql_queries, 1):
+                    print(f"  [{i}] {sql}")
+            print(f"\nTokens: {result.total_tokens:,} (in: {result.input_tokens:,}, out: {result.output_tokens:,})")
+            print(f"Cost: ${result.cost:.4f} | Session: ${agent.session_cost:.4f} ({agent.session_total_tokens:,} tokens)")
+            print()
         except Exception as e:
             print(f"Error: {e}\n")
 
@@ -182,8 +243,8 @@ def main():
     if len(sys.argv) > 1:
         question = " ".join(sys.argv[1:])
         agent = RetailSageAgent()
-        answer = agent.ask(question, verbose=True)
-        print(f"\n{answer}")
+        result = agent.ask(question, verbose=True)
+        print(f"\n{result.answer}")
     else:
         interactive_repl()
 
