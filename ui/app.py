@@ -13,7 +13,7 @@ import streamlit as st
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.agent import RetailSageAgent
+from agent.agent import MODELS, RetailSageAgent
 
 st.set_page_config(
     page_title="Retail-SAGE",
@@ -50,6 +50,18 @@ st.caption("Semantic Analytics & Governed Execution — AI-Powered Retail Analyt
 
 # --- Sidebar ---
 with st.sidebar:
+    st.header("Model")
+    model_choice = st.selectbox(
+        "AI Model",
+        options=list(MODELS.keys()),
+        format_func=lambda m: f"{m.title()} (${MODELS[m]['input_cost']:.2f}/${MODELS[m]['output_cost']:.2f} per M tokens)",
+        index=list(MODELS.keys()).index(agent.model_key),
+    )
+    if model_choice != agent.model_key:
+        agent.set_model(model_choice)
+
+    st.divider()
+
     st.header("About")
     st.markdown("""
     **Retail-SAGE** is an AI analytics agent powered by Claude
@@ -87,12 +99,14 @@ with st.sidebar:
 
 def _render_result_details(agent_result):
     """Render SQL, diagnostics, and token info below an assistant message."""
-    detail_cols = st.columns(3)
+    detail_cols = st.columns(4)
     with detail_cols[0]:
-        st.caption(f"Tokens: {agent_result.total_tokens:,} (in: {agent_result.input_tokens:,} / out: {agent_result.output_tokens:,})")
+        st.caption(f"Model: {agent_result.model}")
     with detail_cols[1]:
-        st.caption(f"Cost: ${agent_result.cost:.4f}")
+        st.caption(f"Tokens: {agent_result.total_tokens:,} (in: {agent_result.input_tokens:,} / out: {agent_result.output_tokens:,})")
     with detail_cols[2]:
+        st.caption(f"Cost: ${agent_result.cost:.4f}")
+    with detail_cols[3]:
         st.caption(f"Turns: {agent_result.total_turns}")
 
     if agent_result.sql_queries:

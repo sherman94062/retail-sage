@@ -23,12 +23,21 @@ from agent.memory import MemoryStore
 from agent.prompts import build_system_prompt
 from agent.tools import TOOL_DEFINITIONS, ToolExecutor
 
-MODEL = "claude-sonnet-4-20250514"
 MAX_TURNS = 15  # Safety limit on tool-use turns
 
-# Pricing per million tokens (Claude Sonnet 4)
-COST_PER_M_INPUT = 3.00
-COST_PER_M_OUTPUT = 15.00
+MODELS = {
+    "haiku": {
+        "id": "claude-haiku-4-5-20251001",
+        "input_cost": 0.80,   # per million tokens
+        "output_cost": 4.00,
+    },
+    "sonnet": {
+        "id": "claude-sonnet-4-20250514",
+        "input_cost": 3.00,
+        "output_cost": 15.00,
+    },
+}
+DEFAULT_MODEL = "haiku"
 
 
 @dataclass
@@ -40,6 +49,9 @@ class AgentResult:
     input_tokens: int = 0
     output_tokens: int = 0
     total_turns: int = 0
+    model: str = ""
+    input_cost_per_m: float = 0.0
+    output_cost_per_m: float = 0.0
 
     @property
     def total_tokens(self) -> int:
@@ -47,19 +59,17 @@ class AgentResult:
 
     @property
     def cost(self) -> float:
-        return (self.input_tokens * COST_PER_M_INPUT / 1_000_000
-                + self.output_tokens * COST_PER_M_OUTPUT / 1_000_000)
+        return (self.input_tokens * self.input_cost_per_m / 1_000_000
+                + self.output_tokens * self.output_cost_per_m / 1_000_000)
 
 
 class RetailSageAgent:
     """AI-powered retail analytics agent using Claude with tool use."""
 
-    # Running session totals
-    session_input_tokens: int = 0
-    session_output_tokens: int = 0
-
-    def __init__(self, db_path: str | None = None, chroma_path: str | None = None):
+    def __init__(self, db_path: str | None = None, chroma_path: str | None = None,
+                 model: str = DEFAULT_MODEL):
         self.client = anthropic.Anthropic()
+        self.set_model(model)
         self.db_path = db_path or os.getenv(
             "DUCKDB_PATH",
             str(Path(__file__).resolve().parent.parent / "data" / "duckdb" / "retail_sage.duckdb"),
@@ -74,14 +84,22 @@ class RetailSageAgent:
         self.session_input_tokens = 0
         self.session_output_tokens = 0
 
+    def set_model(self, model: str) -> None:
+        """Switch the active model. Accepts 'haiku' or 'sonnet'."""
+        if model not in MODELS:
+            raise ValueError(f"Unknown model '{model}'. Choose from: {list(MODELS.keys())}")
+        self.model_key = model
+        self.model_config = MODELS[model]
+        self.model_id = self.model_config["id"]
+
     @property
     def session_total_tokens(self) -> int:
         return self.session_input_tokens + self.session_output_tokens
 
     @property
     def session_cost(self) -> float:
-        return (self.session_input_tokens * COST_PER_M_INPUT / 1_000_000
-                + self.session_output_tokens * COST_PER_M_OUTPUT / 1_000_000)
+        return (self.session_input_tokens * self.model_config["input_cost"] / 1_000_000
+                + self.session_output_tokens * self.model_config["output_cost"] / 1_000_000)
 
     def ask(self, question: str, verbose: bool = False,
             on_progress: Callable[[str], None] | None = None) -> AgentResult:
@@ -94,7 +112,11 @@ class RetailSageAgent:
             verbose: Print debug output to stdout.
             on_progress: Optional callback for live progress updates (used by UI).
         """
-        result = AgentResult()
+        result = AgentResult(
+            model=self.model_key,
+            input_cost_per_m=self.model_config["input_cost"],
+            output_cost_per_m=self.model_config["output_cost"],
+        )
 
         def _progress(msg: str):
             result.diagnostics.append(msg)
@@ -115,7 +137,7 @@ class RetailSageAgent:
             _progress(f"Agent turn {turn + 1}: calling Claude...")
 
             response = self.client.messages.create(
-                model=MODEL,
+                model=self.model_id,
                 max_tokens=4096,
                 system=system_prompt,
                 tools=TOOL_DEFINITIONS,
@@ -174,7 +196,7 @@ class RetailSageAgent:
                         answer += block.text
 
                 result.answer = answer
-                _progress(f"Done. {result.total_turns} turns, {result.total_tokens:,} tokens, ${result.cost:.4f}")
+                _progress(f"Done ({self.model_key}). {result.total_turns} turns, {result.total_tokens:,} tokens, ${result.cost:.4f}")
 
                 # Store this Q&A in memory
                 if result.sql_queries:
