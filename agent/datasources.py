@@ -1,12 +1,18 @@
 """
-Data source configurations for Retail-SAGE.
+Data source configurations and catalog for Retail-SAGE.
 
 Each data source defines its own database path, system prompt, few-shot examples,
 table descriptions, and sample queries for memory seeding.
+
+The catalog provides auto-discovery of available sources with live metadata
+(row counts, freshness, schema stats) for enterprise data source browsing.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+
+import duckdb
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,10 +26,90 @@ class DataSource:
     db_path: str                # path to DuckDB file
     chroma_path: str            # path to ChromaDB directory
     system_prompt: str          # domain-specific system prompt
+    # Enterprise metadata
+    domain: str = ""            # business domain (e.g. "Retail", "AI/ML", "Finance")
+    owner: str = ""             # team or person responsible
+    refresh_cadence: str = ""   # how often data is updated
+    tags: list[str] = field(default_factory=list)  # searchable tags
+    icon: str = ""              # emoji for UI display
+    # Agent config
     few_shot_examples: list[dict] = field(default_factory=list)
     table_descriptions: dict[str, str] = field(default_factory=dict)
     sample_queries: list[dict] = field(default_factory=list)
     example_questions: list[str] = field(default_factory=list)
+
+    @property
+    def is_available(self) -> bool:
+        """Check if the database file exists."""
+        return Path(self.db_path).exists()
+
+    def get_catalog_info(self) -> dict:
+        """Get live metadata about this data source for the catalog."""
+        info = {
+            "key": self.key,
+            "name": self.name,
+            "description": self.description,
+            "domain": self.domain,
+            "owner": self.owner,
+            "refresh_cadence": self.refresh_cadence,
+            "tags": self.tags,
+            "icon": self.icon,
+            "available": self.is_available,
+            "example_questions": self.example_questions,
+            "tables": [],
+            "total_rows": 0,
+            "total_tables": 0,
+            "db_size_mb": 0.0,
+            "last_modified": None,
+        }
+
+        if not self.is_available:
+            return info
+
+        db_path = Path(self.db_path)
+        info["db_size_mb"] = round(db_path.stat().st_size / (1024 ** 2), 1)
+        info["last_modified"] = datetime.fromtimestamp(
+            db_path.stat().st_mtime
+        ).strftime("%Y-%m-%d %H:%M")
+
+        try:
+            conn = duckdb.connect(str(db_path), read_only=True)
+            tables = conn.execute("""
+                SELECT table_schema, table_name, table_type
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+                ORDER BY table_schema, table_name
+            """).fetchall()
+
+            for schema, table_name, table_type in tables:
+                qualified = f'"{schema}"."{table_name}"'
+                try:
+                    row_count = conn.execute(
+                        f"SELECT COUNT(*) FROM {qualified}"
+                    ).fetchone()[0]
+                except Exception:
+                    row_count = 0
+                col_count = conn.execute(f"""
+                    SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema = '{schema}' AND table_name = '{table_name}'
+                """).fetchone()[0]
+
+                display_name = table_name if schema == "main" else f"{schema}.{table_name}"
+                info["tables"].append({
+                    "name": display_name,
+                    "type": table_type,
+                    "rows": row_count,
+                    "columns": col_count,
+                    "description": self.table_descriptions.get(table_name, ""),
+                })
+                info["total_rows"] += row_count
+
+            info["total_tables"] = len(tables)
+            conn.close()
+        except Exception as e:
+            info["error"] = str(e)
+
+        return info
 
 
 # ---------------------------------------------------------------------------
@@ -33,9 +119,14 @@ class DataSource:
 RETAIL = DataSource(
     key="retail",
     name="Retail (TPC-DS)",
-    description="Multi-channel retail analytics — store, catalog, and web sales",
+    description="Multi-channel retail analytics — store, catalog, and web sales across physical stores, catalog, and e-commerce channels with 5+ years of transaction history",
     db_path=str(PROJECT_ROOT / "data" / "duckdb" / "retail_sage.duckdb"),
     chroma_path=str(PROJECT_ROOT / "data" / "chroma" / "retail"),
+    domain="Retail & E-Commerce",
+    owner="Data Engineering",
+    refresh_cadence="Static (TPC-DS benchmark)",
+    tags=["retail", "sales", "returns", "inventory", "customers", "multi-channel", "TPC-DS"],
+    icon="🏪",
     system_prompt="""You are a retail analytics agent with access to a TPC-DS retail data lake \
 covering store, catalog, and web sales channels spanning multiple years. You autonomously analyze \
 data to answer business questions, diagnose metric changes, and identify root causes.
@@ -74,9 +165,14 @@ return rate benchmarks, customer segmentation (RFM), and inventory turn expectat
 HUGGINGFACE = DataSource(
     key="huggingface",
     name="AI/ML Models (Hugging Face)",
-    description="Hugging Face Model Hub — downloads, tasks, architectures, licenses, trends",
+    description="50K models from the Hugging Face Hub — download trends, architecture popularity, task coverage, licensing patterns, and author/org analytics",
     db_path=str(PROJECT_ROOT / "data" / "duckdb" / "huggingface.duckdb"),
     chroma_path=str(PROJECT_ROOT / "data" / "chroma" / "huggingface"),
+    domain="AI & Machine Learning",
+    owner="ML Platform",
+    refresh_cadence="On-demand (scripts/06_generate_huggingface.py)",
+    tags=["AI", "ML", "models", "huggingface", "NLP", "computer-vision", "transformers", "LLM"],
+    icon="🤗",
     system_prompt="""You are an AI/ML analytics agent with access to a comprehensive dataset of \
 models from the Hugging Face Model Hub. You analyze trends in model adoption, architecture \
 popularity, task coverage, licensing patterns, and community engagement.

@@ -355,7 +355,80 @@ if question and result:
             st.caption("No diagnostics.")
 
 elif not question:
-    st.info("Ask a question about your retail data to get started. Try one of the quick questions in the sidebar.")
+    _render_data_catalog()
+
+
+def _render_data_catalog():
+    """Show the data catalog: all available sources with rich metadata."""
+    st.markdown("### Data Catalog")
+    st.caption("Browse available data sources. Select one from the sidebar, then ask a question.")
+
+    for key, source in ALL_SOURCES.items():
+        is_active = key == st.session_state.source_key
+        info = source.get_catalog_info()
+
+        # Source card
+        icon = source.icon or "📊"
+        status = "Active" if is_active else ("Available" if info["available"] else "Not loaded")
+        badge_color = "green" if is_active else ("blue" if info["available"] else "red")
+
+        st.markdown(f"---")
+        header_col, status_col = st.columns([5, 1])
+        with header_col:
+            st.markdown(f"#### {icon} {source.name}")
+        with status_col:
+            st.markdown(f":`{badge_color}`[{status}]")
+
+        st.markdown(source.description)
+
+        if info["available"]:
+            # Metrics row
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Tables", info["total_tables"])
+            m2.metric("Total Rows", f"{info['total_rows']:,}")
+            m3.metric("Size", f"{info['db_size_mb']} MB")
+            m4.metric("Domain", source.domain or "—")
+            m5.metric("Updated", info["last_modified"] or "—")
+
+            # Metadata
+            meta_col, q_col = st.columns(2)
+            with meta_col:
+                if source.owner:
+                    st.caption(f"**Owner:** {source.owner}")
+                if source.refresh_cadence:
+                    st.caption(f"**Refresh:** {source.refresh_cadence}")
+                if source.tags:
+                    st.caption("**Tags:** " + " · ".join(f"`{t}`" for t in source.tags))
+
+            with q_col:
+                if source.example_questions:
+                    st.caption("**Questions this data can answer:**")
+                    for eq in source.example_questions[:5]:
+                        st.caption(f"  • {eq}")
+
+            # Table details
+            if info["tables"]:
+                with st.expander(f"Tables ({info['total_tables']})", expanded=False):
+                    table_data = []
+                    for t in info["tables"]:
+                        table_data.append({
+                            "Table": t["name"],
+                            "Type": t["type"],
+                            "Rows": f"{t['rows']:,}",
+                            "Cols": t["columns"],
+                            "Description": t["description"][:80] if t["description"] else "—",
+                        })
+                    st.dataframe(
+                        pd.DataFrame(table_data),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+        else:
+            st.warning(f"Database not found. Run the data pipeline to load this source.")
+            if key == "retail":
+                st.code("python scripts/01_generate_data.py --sf 1", language="bash")
+            elif key == "huggingface":
+                st.code("python scripts/06_generate_huggingface.py", language="bash")
 
 
 # NOTE: _render_auto_chart is defined above, before first use
