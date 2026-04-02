@@ -123,6 +123,8 @@ class ToolExecutor:
     def __init__(self, db_path: str | Path | None = None, memory_store=None):
         self.db_path = str(db_path or DEFAULT_DB_PATH)
         self.memory = memory_store
+        # Stores DataFrames from the most recent ask() cycle
+        self.last_dataframes: list[tuple[str, pd.DataFrame]] = []  # (sql, df) pairs
 
     def _get_conn(self, read_only: bool = True) -> duckdb.DuckDBPyConnection:
         return duckdb.connect(self.db_path, read_only=read_only)
@@ -157,6 +159,11 @@ class ToolExecutor:
                 q = f"SELECT * FROM ({q}) _sub LIMIT {limit}"
 
             df = conn.execute(q).fetchdf()
+
+            # Store DataFrame for charting (only non-trivial results)
+            if len(df) > 1 and len(df.select_dtypes(include="number").columns) > 0:
+                self.last_dataframes.append((query, df.copy()))
+
             records = df.to_dict(orient="records")
 
             # Truncate large values for readability

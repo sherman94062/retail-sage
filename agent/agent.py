@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import anthropic
 from dotenv import load_dotenv
@@ -142,6 +142,7 @@ class AgentResult:
     tables_queried: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
     api_calls: list[ApiCall] = field(default_factory=list)
+    dataframes: list[Any] = field(default_factory=list)  # list of (sql, pd.DataFrame) tuples
     input_tokens: int = 0
     output_tokens: int = 0
     total_turns: int = 0
@@ -222,6 +223,9 @@ class RetailSageAgent:
                 print(f"  {msg}")
 
         # Build context from memory
+        # Clear DataFrame buffer for this query
+        self.tool_executor.last_dataframes = []
+
         _progress("Searching memory for relevant context...")
         context = self.context_builder.build_context(question, self.memory)
         system_prompt = build_system_prompt(context)
@@ -326,6 +330,8 @@ class RetailSageAgent:
                 # Deduplicate tables, preserving order
                 seen = set()
                 result.tables_queried = [t for t in result.tables_queried if not (t in seen or seen.add(t))]
+                # Collect DataFrames from tool executor
+                result.dataframes = list(self.tool_executor.last_dataframes)
                 _progress(f"Done ({self.model_key}). {result.total_turns} turns, {result.total_tokens:,} tokens, ${result.cost:.4f}")
 
                 # Store this Q&A in memory

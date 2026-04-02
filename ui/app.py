@@ -8,6 +8,7 @@ Usage:
 import sys
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 # Add project root to path
@@ -97,6 +98,68 @@ with st.sidebar:
         if st.button(ex, key=ex, use_container_width=True):
             st.session_state.example_question = ex
 
+def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
+    """Auto-detect and render the best chart for a DataFrame."""
+    numeric_cols = list(df.select_dtypes(include="number").columns)
+    non_numeric_cols = list(df.select_dtypes(exclude="number").columns)
+
+    if not numeric_cols:
+        return
+
+    # Filter out surrogate key columns (not useful for charting)
+    metric_cols = [c for c in numeric_cols if not c.endswith("_sk")]
+    if not metric_cols:
+        return
+
+    # Detect time series: columns with year/month/date in the name
+    time_cols = [c for c in df.columns if any(t in c.lower() for t in ["year", "month", "date", "quarter", "week"])]
+    label_cols = [c for c in non_numeric_cols if not c.endswith("_sk")]
+
+    if time_cols and len(df) > 2:
+        # Time series → line chart
+        time_col = time_cols[0]
+        # If we have year + month, combine them for the x-axis
+        if "d_year" in df.columns and "d_month" in df.columns:
+            chart_df = df.copy()
+            chart_df["period"] = chart_df["d_year"].astype(str) + "-" + chart_df["d_month"].astype(str).str.zfill(2)
+            x_col = "period"
+        else:
+            chart_df = df.copy()
+            x_col = time_col
+
+        # If there's a category column (like channel), use it for color
+        color_col = None
+        for c in label_cols:
+            if c != x_col and df[c].nunique() <= 10:
+                color_col = c
+                break
+
+        y_col = metric_cols[0]
+        try:
+            if color_col:
+                st.line_chart(chart_df, x=x_col, y=y_col, color=color_col)
+            else:
+                st.line_chart(chart_df, x=x_col, y=y_col)
+        except Exception:
+            st.bar_chart(chart_df.set_index(x_col)[metric_cols[:3]])
+
+    elif label_cols and len(df) <= 50:
+        # Categorical → bar chart
+        label_col = label_cols[0]
+        y_col = metric_cols[0]
+        try:
+            st.bar_chart(df, x=label_col, y=y_col)
+        except Exception:
+            st.bar_chart(df.set_index(label_col)[metric_cols[:3]])
+
+    elif len(metric_cols) >= 2 and len(df) > 2:
+        # Multiple metrics → bar chart with first non-numeric as index
+        if label_cols:
+            st.bar_chart(df.set_index(label_cols[0])[metric_cols[:4]])
+        else:
+            st.bar_chart(df[metric_cols[:4]])
+
+
 def _render_result_details(agent_result):
     """Render SQL, diagnostics, LLM calls, and token info below an assistant message."""
     import json as _json
@@ -129,6 +192,18 @@ def _render_result_details(agent_result):
         with st.expander(f"SQL Queries ({len(agent_result.sql_queries)})", expanded=False):
             for j, sql in enumerate(agent_result.sql_queries, 1):
                 st.code(sql, language="sql")
+
+    # Data visualizations
+    if agent_result.dataframes:
+        with st.expander(f"Data & Charts ({len(agent_result.dataframes)} result sets)", expanded=True):
+            for idx, (sql, df) in enumerate(agent_result.dataframes):
+                if len(df) == 0:
+                    continue
+                st.markdown(f"**Result set {idx + 1}** ({len(df)} rows)")
+                st.dataframe(df, use_container_width=True)
+                _render_auto_chart(df, idx)
+                if idx < len(agent_result.dataframes) - 1:
+                    st.divider()
 
     # LLM API Call Details
     if agent_result.api_calls:
