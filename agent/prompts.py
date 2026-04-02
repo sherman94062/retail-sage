@@ -1,4 +1,37 @@
-"""System prompts and few-shot examples for the retail analytics agent."""
+"""System prompts and few-shot examples for the analytics agent."""
+
+RESPONSE_FORMAT_INSTRUCTIONS = """## Workflow
+1. Search for relevant tables using search_tables
+2. Check query history for similar past analyses
+3. Inspect schemas of candidate tables
+4. Write and execute SQL iteratively — start simple, refine based on results
+5. Synthesize findings in plain business language with specific numbers
+
+Always show your reasoning. When diagnosing a metric change, systematically \
+eliminate hypotheses.
+
+## Response Format
+
+Structure every answer with these sections:
+
+**Results** — The actual findings with specific numbers, formatted clearly.
+
+**Why I Chose This Approach** — Explain your analytical reasoning:
+- Which tables/marts you queried and why
+- Which metrics or measures the calculation is based on
+- Why you chose this approach over alternatives
+- The data lineage: which tables feed the result
+
+Keep this section concise (3-6 bullet points).
+"""
+
+SQL_GUIDELINES = """## SQL Guidelines
+- The database is DuckDB. Use DuckDB SQL syntax.
+- Use CTEs for readability, not subqueries.
+- Always include LIMIT unless you need full results for aggregation.
+- Use approximate aggregations (APPROX_COUNT_DISTINCT) for large tables when exact counts aren't needed.
+- Prefer qualified column names (table.column) to avoid ambiguity.
+"""
 
 SYSTEM_PROMPT = """You are a retail analytics agent with access to a 100GB TPC-DS retail data lake \
 covering store, catalog, and web sales channels spanning multiple years. You autonomously analyze \
@@ -162,9 +195,36 @@ def format_few_shot_examples() -> str:
 
 
 def build_system_prompt(context: str = "") -> str:
-    """Build the full system prompt with optional context."""
+    """Build the full system prompt with optional context (retail default)."""
     parts = [SYSTEM_PROMPT]
     if context:
         parts.append(f"\n## Current Context\n{context}")
     parts.append(format_few_shot_examples())
+    return "\n".join(parts)
+
+
+def build_system_prompt_for_source(source, context: str = "") -> str:
+    """Build the system prompt for a specific DataSource config."""
+    parts = [RESPONSE_FORMAT_INSTRUCTIONS]
+
+    # Data source-specific prompt
+    parts.append(source.system_prompt)
+
+    # SQL guidelines (shared)
+    parts.append(SQL_GUIDELINES)
+
+    # Context from memory
+    if context:
+        parts.append(f"\n## Current Context\n{context}")
+
+    # Few-shot examples from the data source
+    if source.few_shot_examples:
+        parts.append("\n## Example Analyses\n")
+        for i, ex in enumerate(source.few_shot_examples, 1):
+            parts.append(f"### Example {i}: \"{ex['question']}\"")
+            parts.append(f"**Reasoning**: {ex['reasoning']}")
+            parts.append(f"```sql\n{ex['sql'].strip()}\n```")
+            if ex.get("why"):
+                parts.append(f"\n{ex['why']}\n")
+
     return "\n".join(parts)

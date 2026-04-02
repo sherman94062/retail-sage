@@ -20,8 +20,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent.context import ContextBuilder
+from agent.datasources import ALL_SOURCES, DEFAULT_SOURCE, DataSource
 from agent.memory import MemoryStore
-from agent.prompts import build_system_prompt
+from agent.prompts import build_system_prompt_for_source
 from agent.tools import TOOL_DEFINITIONS, ToolExecutor
 
 MAX_TURNS = 15  # Safety limit on tool-use turns
@@ -161,25 +162,27 @@ class AgentResult:
 
 
 class RetailSageAgent:
-    """AI-powered retail analytics agent using Claude with tool use."""
+    """AI-powered analytics agent using Claude with tool use."""
 
-    def __init__(self, db_path: str | None = None, chroma_path: str | None = None,
+    def __init__(self, source: str | DataSource = DEFAULT_SOURCE,
                  model: str = DEFAULT_MODEL):
         self.client = anthropic.Anthropic()
         self.set_model(model)
-        self.db_path = db_path or os.getenv(
-            "DUCKDB_PATH",
-            str(Path(__file__).resolve().parent.parent / "data" / "duckdb" / "retail_sage.duckdb"),
-        )
-        chroma = chroma_path or os.getenv(
-            "CHROMA_PATH",
-            str(Path(__file__).resolve().parent.parent / "data" / "chroma"),
-        )
-        self.memory = MemoryStore(chroma)
-        self.context_builder = ContextBuilder(self.db_path)
-        self.tool_executor = ToolExecutor(self.db_path, self.memory)
         self.session_input_tokens = 0
         self.session_output_tokens = 0
+        self.set_source(source)
+
+    def set_source(self, source: str | DataSource) -> None:
+        """Switch the active data source."""
+        if isinstance(source, str):
+            if source not in ALL_SOURCES:
+                raise ValueError(f"Unknown source '{source}'. Choose from: {list(ALL_SOURCES.keys())}")
+            source = ALL_SOURCES[source]
+        self.source = source
+        self.db_path = source.db_path
+        self.memory = MemoryStore(source.chroma_path)
+        self.context_builder = ContextBuilder(self.db_path)
+        self.tool_executor = ToolExecutor(self.db_path, self.memory)
 
     def set_model(self, model: str) -> None:
         """Switch the active model. Accepts 'haiku' or 'sonnet'."""
@@ -228,7 +231,7 @@ class RetailSageAgent:
 
         _progress("Searching memory for relevant context...")
         context = self.context_builder.build_context(question, self.memory)
-        system_prompt = build_system_prompt(context)
+        system_prompt = build_system_prompt_for_source(self.source, context)
 
         messages = [{"role": "user", "content": question}]
 

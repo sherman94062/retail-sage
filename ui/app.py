@@ -16,6 +16,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.agent import MODELS, AgentResult, RetailSageAgent
+from agent.datasources import ALL_SOURCES
 
 st.set_page_config(
     page_title="Retail-SAGE",
@@ -102,15 +103,38 @@ if "history" not in st.session_state:
     st.session_state.history = []  # list of (question, AgentResult)
 
 
+if "source_key" not in st.session_state:
+    st.session_state.source_key = "retail"
+
+
 @st.cache_resource
-def get_agent():
-    return RetailSageAgent()
+def get_agent(source_key: str):
+    return RetailSageAgent(source=source_key)
 
 
-agent = get_agent()
+agent = get_agent(st.session_state.source_key)
 
 # --- Sidebar ---
 with st.sidebar:
+    st.header("Data Source")
+    source_choice = st.selectbox(
+        "Dataset",
+        options=list(ALL_SOURCES.keys()),
+        format_func=lambda k: ALL_SOURCES[k].name,
+        index=list(ALL_SOURCES.keys()).index(st.session_state.source_key),
+    )
+    if source_choice != st.session_state.source_key:
+        st.session_state.source_key = source_choice
+        st.session_state.current_result = None
+        st.session_state.current_question = None
+        st.session_state.history = []
+        get_agent.clear()
+        st.rerun()
+
+    st.caption(ALL_SOURCES[st.session_state.source_key].description)
+
+    st.divider()
+
     st.header("Model")
     model_choice = st.selectbox(
         "AI Model",
@@ -131,13 +155,7 @@ with st.sidebar:
     st.divider()
 
     st.markdown("**Quick questions:**")
-    examples = [
-        "Total revenue last year by channel?",
-        "Top product categories by return rate?",
-        "Monthly customer count trend",
-        "Top 10 stores by net profit",
-        "Weekend vs weekday performance",
-    ]
+    examples = agent.source.example_questions or ["Tell me about this dataset"]
     for ex in examples:
         if st.button(ex, key=ex, use_container_width=True):
             st.session_state.pending_question = ex
