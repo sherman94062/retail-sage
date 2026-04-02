@@ -5,6 +5,7 @@ Usage:
     streamlit run ui/app.py
 """
 
+import json as _json
 import sys
 from pathlib import Path
 
@@ -14,19 +15,36 @@ import streamlit as st
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.agent import MODELS, RetailSageAgent
+from agent.agent import MODELS, AgentResult, RetailSageAgent
 
 st.set_page_config(
     page_title="Retail-SAGE",
     page_icon="🏪",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# --- Session state init ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "query_results" not in st.session_state:
-    st.session_state.query_results = []  # parallel list: AgentResult per assistant message
+# Compact styling
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.5rem; padding-bottom: 0.5rem; }
+    h1 { font-size: 1.6rem !important; margin-bottom: 0 !important; }
+    .stMetric label { font-size: 0.75rem !important; }
+    .stMetric [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
+    .stTabs [data-baseweb="tab"] { font-size: 0.85rem; padding: 0.4rem 0.8rem; }
+    div[data-testid="stExpander"] summary { font-size: 0.85rem; }
+    .stDataFrame { font-size: 0.8rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- Session state ---
+if "current_result" not in st.session_state:
+    st.session_state.current_result = None  # AgentResult for current query
+if "current_question" not in st.session_state:
+    st.session_state.current_question = None
+if "history" not in st.session_state:
+    st.session_state.history = []  # list of (question, AgentResult)
 
 
 @st.cache_resource
@@ -36,26 +54,13 @@ def get_agent():
 
 agent = get_agent()
 
-# --- Top bar: session token/cost metrics ---
-top_cols = st.columns([3, 1, 1, 1])
-with top_cols[0]:
-    st.title("Retail-SAGE")
-with top_cols[1]:
-    st.metric("Session Tokens", f"{agent.session_total_tokens:,}")
-with top_cols[2]:
-    st.metric("Session Cost", f"${agent.session_cost:.4f}")
-with top_cols[3]:
-    st.metric("Queries", len([m for m in st.session_state.messages if m["role"] == "user"]))
-
-st.caption("Semantic Analytics & Governed Execution — AI-Powered Retail Analytics Agent")
-
 # --- Sidebar ---
 with st.sidebar:
     st.header("Model")
     model_choice = st.selectbox(
         "AI Model",
         options=list(MODELS.keys()),
-        format_func=lambda m: f"{m.title()} (${MODELS[m]['input_cost']:.2f}/${MODELS[m]['output_cost']:.2f} per M tokens)",
+        format_func=lambda m: f"{m.title()} (${MODELS[m]['input_cost']:.2f}/${MODELS[m]['output_cost']:.2f} per M)",
         index=list(MODELS.keys()).index(agent.model_key),
     )
     if model_choice != agent.model_key:
@@ -63,41 +68,224 @@ with st.sidebar:
 
     st.divider()
 
-    st.header("About")
-    st.markdown("""
-    **Retail-SAGE** is an AI analytics agent powered by Claude
-    that autonomously analyzes a TPC-DS retail data lake.
+    # Session metrics
+    m1, m2 = st.columns(2)
+    m1.metric("Tokens", f"{agent.session_total_tokens:,}")
+    m2.metric("Cost", f"${agent.session_cost:.4f}")
 
-    **Capabilities:**
-    - Natural language to SQL generation
-    - Multi-step data analysis
-    - Root cause diagnosis
-    - Cross-channel retail analytics
+    st.divider()
 
-    **Data:** TPC-DS benchmark (store, catalog, web channels)
-    """)
+    st.markdown("**Quick questions:**")
+    examples = [
+        "Total revenue last year by channel?",
+        "Top product categories by return rate?",
+        "Monthly customer count trend",
+        "Top 10 stores by net profit",
+        "Weekend vs weekday performance",
+    ]
+    for ex in examples:
+        if st.button(ex, key=ex, use_container_width=True):
+            st.session_state.pending_question = ex
 
     st.divider()
 
     stats = agent.memory.stats()
-    st.metric("Indexed Queries", stats["query_history"])
-    st.metric("Indexed Tables", stats["table_descriptions"])
-    st.metric("Indexed Columns", stats["column_glossary"])
+    st.caption(f"Memory: {stats['query_history']} queries · {stats['table_descriptions']} tables · {stats['column_glossary']} columns")
 
+    # History
+    if st.session_state.history:
+        st.divider()
+        st.markdown("**History:**")
+        for i, (q, _r) in enumerate(reversed(st.session_state.history)):
+            if st.button(f"{q[:50]}{'...' if len(q) > 50 else ''}", key=f"hist_{i}", use_container_width=True):
+                st.session_state.current_question = q
+                st.session_state.current_result = _r
+
+# --- Top bar ---
+header_cols = st.columns([4, 1, 1, 1])
+with header_cols[0]:
+    st.title("Retail-SAGE")
+with header_cols[1]:
+    st.metric("Model", agent.model_key.title())
+with header_cols[2]:
+    st.metric("Session", f"${agent.session_cost:.4f}")
+with header_cols[3]:
+    st.metric("Queries", len(st.session_state.history))
+
+# --- Input ---
+if "pending_question" in st.session_state:
+    prompt = st.session_state.pop("pending_question")
+else:
+    prompt = st.chat_input("Ask a question about your retail data...")
+
+# --- Process new question ---
+if prompt:
+    st.session_state.current_question = prompt
+    st.session_state.current_result = None  # clear while processing
+
+    progress_area = st.empty()
+    progress_lines = []
+
+    def on_progress(msg: str):
+        progress_lines.append(msg)
+        progress_area.info("\n".join(progress_lines))
+
+    try:
+        result = agent.ask(prompt, on_progress=on_progress)
+        progress_area.empty()
+        st.session_state.current_result = result
+        st.session_state.history.append((prompt, result))
+    except Exception as e:
+        progress_area.empty()
+        st.session_state.current_result = AgentResult(answer=f"Error: {e}")
+        st.session_state.history.append((prompt, st.session_state.current_result))
+    st.rerun()
+
+# --- Main display: current Q&A ---
+question = st.session_state.current_question
+result = st.session_state.current_result
+
+if question and result:
+    st.markdown(f"**Q:** {question}")
     st.divider()
 
-    st.markdown("**Example Questions:**")
-    examples = [
-        "What was our total revenue last year by channel?",
-        "Which product categories have the highest return rates?",
-        "Show me the monthly customer count trend",
-        "What are the top 10 stores by net profit?",
-        "How does weekend vs weekday performance compare?",
-    ]
-    for ex in examples:
-        if st.button(ex, key=ex, use_container_width=True):
-            st.session_state.example_question = ex
+    # Tabs: Results | Data & Charts | SQL | LLM Calls | Diagnostics
+    tab_names = ["Results"]
+    if result.dataframes:
+        tab_names.append("Data & Charts")
+    tab_names.extend(["SQL", "LLM Calls", "Diagnostics"])
+    tabs = st.tabs(tab_names)
+    tab_idx = 0
 
+    # --- Results tab ---
+    with tabs[tab_idx]:
+        # Compact metrics row
+        mc = st.columns(5)
+        mc[0].caption(f"Model: **{result.model}**")
+        mc[1].caption(f"Tokens: **{result.total_tokens:,}**")
+        mc[2].caption(f"Cost: **${result.cost:.4f}**")
+        mc[3].caption(f"Turns: **{result.total_turns}**")
+        if result.tables_queried:
+            mc[4].caption(f"Tables: **{len(result.tables_queried)}**")
+
+        st.markdown(result.answer)
+
+        # dbt lineage (compact, inline)
+        if result.tables_queried:
+            marts = [t for t in result.tables_queried if t.startswith(("fct_", "dim_", "daily_", "customer_ltv"))]
+            intermediates = [t for t in result.tables_queried if t.startswith("int_")]
+            raw = [t for t in result.tables_queried if t not in marts and t not in intermediates]
+            parts = []
+            if raw:
+                parts.append(f"**Raw:** `{'`, `'.join(raw)}`")
+            if intermediates:
+                parts.append(f"**Intermediate:** `{'`, `'.join(intermediates)}`")
+            if marts:
+                parts.append(f"**Marts:** `{'`, `'.join(marts)}`")
+            st.caption("dbt lineage: " + " → ".join(parts))
+    tab_idx += 1
+
+    # --- Data & Charts tab ---
+    if result.dataframes:
+        with tabs[tab_idx]:
+            for i, (sql, df) in enumerate(result.dataframes):
+                if len(df) == 0:
+                    continue
+                st.caption(f"Result set {i + 1} — {len(df)} rows, {len(df.columns)} columns")
+                _render_auto_chart(df, i)
+                st.dataframe(df, use_container_width=True, height=min(35 * len(df) + 38, 400))
+                if i < len(result.dataframes) - 1:
+                    st.divider()
+        tab_idx += 1
+
+    # --- SQL tab ---
+    with tabs[tab_idx]:
+        if result.sql_queries:
+            for i, sql in enumerate(result.sql_queries, 1):
+                st.caption(f"Query {i}")
+                st.code(sql, language="sql")
+        else:
+            st.caption("No SQL executed.")
+    tab_idx += 1
+
+    # --- LLM Calls tab ---
+    with tabs[tab_idx]:
+        if result.api_calls:
+            for call in result.api_calls:
+                st.markdown(f"**Turn {call.turn}** — stop: `{call.stop_reason}` · tokens: {call.total_tokens:,} · cost: ${call.cost:.6f}")
+
+                req_col, resp_col = st.columns(2)
+                with req_col:
+                    st.caption("Request")
+                    st.code(_json.dumps({
+                        "model": call.model,
+                        "max_tokens": call.max_tokens,
+                        "system": f"<{call.system_prompt_length:,} chars>",
+                        "tools": f"<{call.tools_provided} tools>",
+                        "messages": f"<{call.messages_sent} msgs>",
+                    }, indent=2), language="json")
+                with resp_col:
+                    st.caption("Response")
+                    st.code(_json.dumps({
+                        "stop_reason": call.stop_reason,
+                        "input_tokens": call.input_tokens,
+                        "output_tokens": call.output_tokens,
+                        "cost": f"${call.cost:.6f}",
+                    }, indent=2), language="json")
+
+                if call.assistant_text and call.stop_reason == "tool_use":
+                    with st.expander("Assistant reasoning", expanded=False):
+                        st.markdown(call.assistant_text[:800])
+
+                for tc in call.tool_calls:
+                    with st.expander(f"Tool: `{tc.name}`", expanded=False):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.caption("Input")
+                            st.code(_json.dumps(tc.input, indent=2, default=str), language="json")
+                        with c2:
+                            st.caption("Result")
+                            try:
+                                parsed = _json.loads(tc.result)
+                                preview = _json.dumps(parsed, indent=2, default=str)
+                                if len(preview) > 2000:
+                                    preview = preview[:2000] + "\n..."
+                                st.code(preview, language="json")
+                            except (_json.JSONDecodeError, TypeError):
+                                st.code(tc.result[:2000], language="text")
+
+                st.divider()
+
+            # Summary table
+            st.caption("Turn-by-turn summary")
+            st.dataframe(pd.DataFrame([
+                {
+                    "Turn": c.turn,
+                    "Stop": c.stop_reason,
+                    "Tools": ", ".join(tc.name for tc in c.tool_calls) or "—",
+                    "In": c.input_tokens,
+                    "Out": c.output_tokens,
+                    "Cost": f"${c.cost:.6f}",
+                }
+                for c in result.api_calls
+            ]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No API calls recorded.")
+    tab_idx += 1
+
+    # --- Diagnostics tab ---
+    with tabs[tab_idx]:
+        if result.diagnostics:
+            for diag in result.diagnostics:
+                st.text(diag)
+        else:
+            st.caption("No diagnostics.")
+
+elif not question:
+    st.info("Ask a question about your retail data to get started. Try one of the quick questions in the sidebar.")
+
+
+# --- Helper: auto charting ---
 def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
     """Auto-detect and render the best chart for a DataFrame."""
     numeric_cols = list(df.select_dtypes(include="number").columns)
@@ -106,19 +294,15 @@ def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
     if not numeric_cols:
         return
 
-    # Filter out surrogate key columns (not useful for charting)
     metric_cols = [c for c in numeric_cols if not c.endswith("_sk")]
     if not metric_cols:
         return
 
-    # Detect time series: columns with year/month/date in the name
     time_cols = [c for c in df.columns if any(t in c.lower() for t in ["year", "month", "date", "quarter", "week"])]
     label_cols = [c for c in non_numeric_cols if not c.endswith("_sk")]
 
     if time_cols and len(df) > 2:
-        # Time series → line chart
         time_col = time_cols[0]
-        # If we have year + month, combine them for the x-axis
         if "d_year" in df.columns and "d_month" in df.columns:
             chart_df = df.copy()
             chart_df["period"] = chart_df["d_year"].astype(str) + "-" + chart_df["d_month"].astype(str).str.zfill(2)
@@ -127,7 +311,6 @@ def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
             chart_df = df.copy()
             x_col = time_col
 
-        # If there's a category column (like channel), use it for color
         color_col = None
         for c in label_cols:
             if c != x_col and df[c].nunique() <= 10:
@@ -144,7 +327,6 @@ def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
             st.bar_chart(chart_df.set_index(x_col)[metric_cols[:3]])
 
     elif label_cols and len(df) <= 50:
-        # Categorical → bar chart
         label_col = label_cols[0]
         y_col = metric_cols[0]
         try:
@@ -153,188 +335,7 @@ def _render_auto_chart(df: pd.DataFrame, idx: int) -> None:
             st.bar_chart(df.set_index(label_col)[metric_cols[:3]])
 
     elif len(metric_cols) >= 2 and len(df) > 2:
-        # Multiple metrics → bar chart with first non-numeric as index
         if label_cols:
             st.bar_chart(df.set_index(label_cols[0])[metric_cols[:4]])
         else:
             st.bar_chart(df[metric_cols[:4]])
-
-
-def _render_result_details(agent_result):
-    """Render SQL, diagnostics, LLM calls, and token info below an assistant message."""
-    import json as _json
-
-    detail_cols = st.columns(4)
-    with detail_cols[0]:
-        st.caption(f"Model: {agent_result.model}")
-    with detail_cols[1]:
-        st.caption(f"Tokens: {agent_result.total_tokens:,} (in: {agent_result.input_tokens:,} / out: {agent_result.output_tokens:,})")
-    with detail_cols[2]:
-        st.caption(f"Cost: ${agent_result.cost:.4f}")
-    with detail_cols[3]:
-        st.caption(f"Turns: {agent_result.total_turns}")
-
-    if agent_result.tables_queried:
-        marts = [t for t in agent_result.tables_queried if t.startswith(("fct_", "dim_", "daily_", "customer_ltv"))]
-        intermediates = [t for t in agent_result.tables_queried if t.startswith("int_")]
-        raw = [t for t in agent_result.tables_queried if t not in marts and t not in intermediates]
-        lineage_parts = []
-        if raw:
-            lineage_parts.append(f"Raw: `{'`, `'.join(raw)}`")
-        if intermediates:
-            lineage_parts.append(f"Intermediate: `{'`, `'.join(intermediates)}`")
-        if marts:
-            lineage_parts.append(f"Marts: `{'`, `'.join(marts)}`")
-        with st.expander(f"dbt Models Used ({len(agent_result.tables_queried)})", expanded=False):
-            st.markdown(" → ".join(lineage_parts) if lineage_parts else "None")
-
-    if agent_result.sql_queries:
-        with st.expander(f"SQL Queries ({len(agent_result.sql_queries)})", expanded=False):
-            for j, sql in enumerate(agent_result.sql_queries, 1):
-                st.code(sql, language="sql")
-
-    # Data visualizations
-    if agent_result.dataframes:
-        with st.expander(f"Data & Charts ({len(agent_result.dataframes)} result sets)", expanded=True):
-            for idx, (sql, df) in enumerate(agent_result.dataframes):
-                if len(df) == 0:
-                    continue
-                st.markdown(f"**Result set {idx + 1}** ({len(df)} rows)")
-                st.dataframe(df, use_container_width=True)
-                _render_auto_chart(df, idx)
-                if idx < len(agent_result.dataframes) - 1:
-                    st.divider()
-
-    # LLM API Call Details
-    if agent_result.api_calls:
-        with st.expander(f"LLM API Calls ({len(agent_result.api_calls)} turns)", expanded=False):
-            for call in agent_result.api_calls:
-                st.markdown(f"---\n#### Turn {call.turn}")
-
-                # Request payload
-                req_col, resp_col = st.columns(2)
-                with req_col:
-                    st.markdown("**Request**")
-                    st.code(_json.dumps({
-                        "model": call.model,
-                        "max_tokens": call.max_tokens,
-                        "system": f"<{call.system_prompt_length:,} chars>",
-                        "tools": f"<{call.tools_provided} tool definitions>",
-                        "messages": f"<{call.messages_sent} messages>",
-                    }, indent=2), language="json")
-
-                with resp_col:
-                    st.markdown("**Response**")
-                    resp_data = {
-                        "stop_reason": call.stop_reason,
-                        "usage": {
-                            "input_tokens": call.input_tokens,
-                            "output_tokens": call.output_tokens,
-                            "total_tokens": call.total_tokens,
-                            "cost": f"${call.cost:.6f}",
-                        },
-                    }
-                    st.code(_json.dumps(resp_data, indent=2), language="json")
-
-                # Assistant reasoning text (if any)
-                if call.assistant_text and call.stop_reason == "tool_use":
-                    st.markdown("**Assistant reasoning** (before tool calls):")
-                    st.markdown(f"> {call.assistant_text[:500]}{'...' if len(call.assistant_text) > 500 else ''}")
-
-                # Tool calls with full payloads
-                if call.tool_calls:
-                    for tc in call.tool_calls:
-                        st.markdown(f"**Tool call:** `{tc.name}`")
-                        in_col, out_col = st.columns(2)
-                        with in_col:
-                            st.markdown("*Input payload:*")
-                            st.code(_json.dumps(tc.input, indent=2, default=str), language="json")
-                        with out_col:
-                            st.markdown("*Result (truncated):*")
-                            try:
-                                parsed = _json.loads(tc.result)
-                                preview = _json.dumps(parsed, indent=2, default=str)
-                                if len(preview) > 1500:
-                                    preview = preview[:1500] + "\n... (truncated)"
-                                st.code(preview, language="json")
-                            except (_json.JSONDecodeError, TypeError):
-                                st.code(tc.result[:1500], language="text")
-
-                # Final response text (last turn only)
-                if call.stop_reason == "end_turn" and call.assistant_text:
-                    st.markdown("**Final response:** *(see answer above)*")
-
-            # Summary table
-            st.markdown("---\n**Turn-by-turn token summary:**")
-            summary_data = []
-            for call in agent_result.api_calls:
-                tool_names = ", ".join(tc.name for tc in call.tool_calls) if call.tool_calls else "—"
-                summary_data.append({
-                    "Turn": call.turn,
-                    "Stop Reason": call.stop_reason,
-                    "Tools Called": tool_names,
-                    "Input Tokens": f"{call.input_tokens:,}",
-                    "Output Tokens": f"{call.output_tokens:,}",
-                    "Cost": f"${call.cost:.6f}",
-                })
-            st.table(summary_data)
-
-    if agent_result.diagnostics:
-        with st.expander("Diagnostics", expanded=False):
-            for diag in agent_result.diagnostics:
-                st.text(diag)
-
-
-# --- Chat history ---
-for i, message in enumerate(st.session_state.messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-        # Show SQL and diagnostics for assistant messages
-        if message["role"] == "assistant":
-            result_idx = i // 2
-            if result_idx < len(st.session_state.query_results):
-                agent_result = st.session_state.query_results[result_idx]
-                _render_result_details(agent_result)
-
-# --- Handle input ---
-if "example_question" in st.session_state:
-    prompt = st.session_state.pop("example_question")
-else:
-    prompt = st.chat_input("Ask a question about your retail data...")
-
-if prompt:
-    # Add user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Get agent response with live progress
-    with st.chat_message("assistant"):
-        progress_container = st.empty()
-        progress_lines = []
-
-        def on_progress(msg: str):
-            progress_lines.append(msg)
-            progress_container.info("\n".join(progress_lines))
-
-        try:
-            agent_result = agent.ask(prompt, on_progress=on_progress)
-            progress_container.empty()
-
-            st.markdown(agent_result.answer)
-            st.session_state.messages.append({"role": "assistant", "content": agent_result.answer})
-            st.session_state.query_results.append(agent_result)
-
-            _render_result_details(agent_result)
-
-        except Exception as e:
-            progress_container.empty()
-            error_msg = f"Error: {e}"
-            st.error(error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            from agent.agent import AgentResult
-            st.session_state.query_results.append(AgentResult(answer=error_msg))
-
-    # Rerun to update top metrics
-    st.rerun()
